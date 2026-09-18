@@ -68,6 +68,7 @@ class AccountTable(ctk.CTkFrame):
         self.context_menu = tk.Menu(self, tearoff=0, bg="#2b2b2b", fg="white")
         self.context_menu.add_command(label="📋 Copy Tài khoản", command=self._copy_username)
         self.context_menu.add_command(label="🔑 Copy Mật khẩu", command=self._copy_password)
+        self.context_menu.add_command(label="✏️ Đổi mật khẩu", command=self._change_password)
         self.context_menu.add_separator()
         self.context_menu.add_command(label="🔄 Check lại", command=self._recheck)
         self.context_menu.add_command(label="🗑 Xóa", command=self._delete_account)
@@ -191,6 +192,49 @@ class AccountTable(ctk.CTkFrame):
         acc = self._get_selected_account()
         if acc:
             copy_to_clipboard(self._master, acc.password)
+            
+    def _change_password(self):
+        """Mở dialog đổi mật khẩu cho tài khoản đang chọn."""
+        acc = self._get_selected_account()
+        if not acc:
+            return
+        
+        # Tạo dialog đổi mật khẩu
+        dialog = ctk.CTkToplevel(self._master)
+        dialog.title(f"Đổi mật khẩu - {acc.username}")
+        dialog.geometry("400x200")
+        dialog.resizable(False, False)
+        dialog.grab_set()  # Modal
+        dialog.transient(self._master)
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = self._master.winfo_x() + (self._master.winfo_width() // 2) - 200
+        y = self._master.winfo_y() + (self._master.winfo_height() // 2) - 100
+        dialog.geometry(f"400x200+{x}+{y}")
+        
+        # Content
+        ctk.CTkLabel(dialog, text=f"Tài khoản: {acc.username}", font=("Arial", 13, "bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(dialog, text=f"Mật khẩu cũ: {acc.password}", font=("Arial", 12), text_color="#AAAAAA").pack(pady=(0, 10))
+        
+        new_pass_entry = ctk.CTkEntry(dialog, placeholder_text="Nhập mật khẩu mới...", width=300, show="")
+        new_pass_entry.pack(pady=5)
+        new_pass_entry.focus_set()
+        
+        def apply_change():
+            new_pass = new_pass_entry.get().strip()
+            if new_pass:
+                acc.password = new_pass
+                self.update_account(acc)
+            dialog.destroy()
+        
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=15)
+        ctk.CTkButton(btn_frame, text="✅ Xác nhận", fg_color="green", hover_color="darkgreen", command=apply_change, width=120).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="❌ Hủy", fg_color="gray", hover_color="darkgray", command=dialog.destroy, width=120).pack(side="left", padx=10)
+        
+        # Enter key to confirm
+        new_pass_entry.bind("<Return>", lambda e: apply_change())
             
     def _recheck(self):
         acc = self._get_selected_account()

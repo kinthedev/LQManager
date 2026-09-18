@@ -1,5 +1,6 @@
 import customtkinter as ctk
 import tkinter.filedialog as filedialog
+import tkinter.messagebox as messagebox
 import threading
 from typing import List
 
@@ -7,6 +8,7 @@ from models import Account, AccountStatus, SecurityInfo, RankTier, CheckResult
 from account_parser import parse_accounts_file
 from check_engine import MockCheckEngine
 from exporter import export_live_accounts, export_report_csv
+from state_manager import save_state, load_state, has_saved_state
 from utils import copy_to_clipboard, mask_password, format_number
 
 from widgets.status_bar import StatusBar
@@ -34,6 +36,7 @@ class LQManagerApp(ctk.CTk):
         
         # State
         self.accounts: List[Account] = []
+        self.current_filepath: str | None = None  # Đường dẫn file đang mở
         self.check_thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
@@ -67,12 +70,34 @@ class LQManagerApp(ctk.CTk):
             on_delay_change=self.change_delay
         )
         
+        # Auto-save khi đóng app
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        
     def open_file(self):
         file_path = filedialog.askopenfilename(
             title="Chọn file tài khoản",
             filetypes=(("Text files", "*.txt"), ("All files", "*.*"))
         )
         if file_path:
+            self.current_filepath = file_path
+            
+            # Kiểm tra có state đã lưu không
+            if has_saved_state(file_path):
+                saved = load_state(file_path)
+                if saved:
+                    self.accounts = saved
+                    self.account_table.load_accounts(self.accounts)
+                    # Đếm số acc đã check
+                    self._checked_count = sum(
+                        1 for a in self.accounts 
+                        if a.status != AccountStatus.UNCHECKED
+                    )
+                    self.status_bar.reset()
+                    self.status_bar.update_progress(self._checked_count, len(self.accounts))
+                    self._update_stats()
+                    return
+            
+            # Không có state → parse từ file txt
             self.accounts = parse_accounts_file(file_path)
             self.account_table.load_accounts(self.accounts)
             self._checked_count = 0
@@ -84,12 +109,29 @@ class LQManagerApp(ctk.CTk):
             self.toolbar.reset_buttons()
             return
         
-        # Reset only unchecked accounts or all if none checked yet
-        self._checked_count = 0
+        # Chỉ check những acc chưa check
+        unchecked = [a for a in self.accounts if a.status == AccountStatus.UNCHECKED]
+        if not unchecked:
+            # Tất cả đã check, hỏi có muốn check lại không
+            self._checked_count = 0
+            for a in self.accounts:
+                a.status = AccountStatus.UNCHECKED
+                a.heroes_count = 0
+                a.skins_count = 0
+                a.gold = 0
+                a.military_medals = 0
+                a.rank = None
+                a.credibility_score = 0
+                a.security = SecurityInfo.NONE
+            self.account_table.refresh_table()
+            unchecked = self.accounts
+        
         self.stop_event.clear()
         self.pause_event.set()
         
-        self.check_thread = threading.Thread(target=self._check_worker, daemon=True)
+        self.check_thread = threading.Thread(
+            target=self._check_worker, args=(unchecked,), daemon=True
+        )
         self.check_thread.start()
         
     def pause_checking(self):
@@ -137,9 +179,17 @@ class LQManagerApp(ctk.CTk):
         self.status_bar.update_progress(self._checked_count, len(self.accounts))
         self.status_bar.update_stats(live, ban, wrong, captcha)
         
-    def _check_worker(self):
+    def _save_current_state(self):
+        """Lưu trạng thái hiện tại ra file JSON."""
+        if self.current_filepath and self.accounts:
+            try:
+                save_state(self.accounts, self.current_filepath)
+            except Exception:
+                pass  # Silent fail on save
+        
+    def _check_worker(self, accounts_to_check: List[Account]):
         self.engine.check_accounts(
-            accounts=self.accounts,
+            accounts=accounts_to_check,
             callback=self._on_account_checked,
             stop_event=self.stop_event,
             pause_event=self.pause_event
@@ -155,10 +205,15 @@ class LQManagerApp(ctk.CTk):
         self.account_table.update_account(acc)
         self._update_stats()
         
+        # Auto-save mỗi 5 acc hoặc khi check xong
+        if self._checked_count % 5 == 0:
+            self._save_current_state()
+        
     def _on_check_complete(self):
         """Called when all accounts have been checked or stopped."""
         self.toolbar.reset_buttons()
         self._update_stats()
+        self._save_current_state()  # Lưu khi check xong
         
     def _recheck_single(self, acc: Account):
         """Re-check a single account in a background thread."""
@@ -175,3 +230,14 @@ class LQManagerApp(ctk.CTk):
             self.after(0, self._update_gui_after_check, acc)
         
         threading.Thread(target=_worker, daemon=True).start()
+        
+    def _on_close(self):
+        """Xử lý khi đóng app — lưu state trước khi thoát."""
+        # Dừng check nếu đang chạy
+        self.stop_event.set()
+        self.pause_event.set()
+        
+        # Lưu state
+        self._save_current_state()
+        
+        self.destroy()
